@@ -35,49 +35,55 @@ export default function PlateScanner({ onConfirm, onClose }) {
     let text = String(raw).toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (!text) return '';
 
-    // Fix common OCR swaps that appear on number plates.
-    text = text
-      .replace(/IND/gi, '')
-      .replace(/L0/g, 'KL')
-      .replace(/LO/g, 'KL')
-      .replace(/K0/g, 'KO')
-      .replace(/IO/g, '10')
-      .replace(/[O]/g, '0')
-      .replace(/[Q]/g, '0')
-      .replace(/[Z]/g, '2')
-      .replace(/[S]/g, '5')
-      .replace(/[B]/g, '8');
+    text = text.replace(/IND/gi, '');
 
-    const candidates = new Set([
-      text,
-      text.replace(/[I]/g, '1'),
-      text.replace(/[L]/g, '1'),
-      text.replace(/[O]/g, '0').replace(/[Q]/g, '0').replace(/[Z]/g, '2').replace(/[S]/g, '5').replace(/[B]/g, '8')
-    ]);
+    const replacements = [
+      ['O', '0'],
+      ['Q', '0'],
+      ['I', '1'],
+      ['L', '1'],
+      ['Z', '2'],
+      ['S', '5'],
+      ['B', '8'],
+      ['G', '6'],
+      ['A', '4']
+    ];
+
+    const candidates = new Set([text]);
+    for (const [from, to] of replacements) {
+      for (const candidate of Array.from(candidates)) {
+        candidates.add(candidate.replace(new RegExp(from, 'g'), to));
+      }
+    }
+
+    const patterns = [
+      /([A-Z]{2})([0-9]{2})([A-Z]{1,3})([0-9]{4})/,
+      /([A-Z]{2})([0-9]{1,2})([A-Z]{1,3})([0-9]{4})/,
+      /([A-Z]{2})([0-9]{2})([A-Z]{2})([0-9]{4})/
+    ];
+
+    const valid = [];
 
     for (const candidate of candidates) {
-      const patterns = [
-        /([A-Z]{2})([0-9]{2})([A-Z]{1,3})([0-9]{4})/,
-        /([A-Z]{2})([0-9]{1,2})([A-Z]{1,3})([0-9]{4})/,
-        /([A-Z]{2})([0-9]{2})([A-Z]{2})([0-9]{4})/
-      ];
-
       for (const pattern of patterns) {
         const match = candidate.match(pattern);
-        if (match) {
-          const state = match[1];
-          const reg = match[2];
-          const series = match[3];
-          const num = match[4];
+        if (!match) continue;
 
-          if (state.length === 2 && series.length >= 1) {
-            return `${state} ${reg} ${series} ${num}`;
-          }
+        const state = match[1];
+        const reg = match[2];
+        const series = match[3];
+        const number = match[4];
+
+        if (state.length === 2 && number.length === 4 && reg.length >= 1 && series.length >= 1) {
+          valid.push(`${state} ${reg} ${series} ${number}`.replace(/\s+/g, ' ').trim());
         }
       }
     }
 
-    return '';
+    if (!valid.length) return '';
+
+    const preferred = valid.find(item => /[A-Z]{2}[0-9]{2}[A-Z]{1,3}[0-9]{4}/.test(item.replace(/\s+/g, '')));
+    return preferred || valid[0];
   };
 
   const handleScanNow = async () => {
@@ -132,7 +138,7 @@ export default function PlateScanner({ onConfirm, onClose }) {
       if (webcamRef.current?.video?.readyState === 4) {
         handleScanNow();
       }
-    }, 2000);
+    }, 1500);
 
     return () => clearInterval(autoScanTimer);
   }, [workerReady, detectedPlate]);

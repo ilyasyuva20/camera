@@ -29,36 +29,50 @@ export default function PlateScanner({ onConfirm, onClose }) {
     };
   }, []);
 
-  // OCR output can be noisy; accept only realistic Indian plate patterns.
   const normalizeIndianPlate = (raw) => {
     if (!raw) return '';
 
-    const baseText = String(raw)
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, '');
+    let text = String(raw).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!text) return '';
 
-    if (!baseText) return '';
+    // Fix common OCR swaps that appear on number plates.
+    text = text
+      .replace(/IND/gi, '')
+      .replace(/L0/g, 'KL')
+      .replace(/LO/g, 'KL')
+      .replace(/K0/g, 'KO')
+      .replace(/IO/g, '10')
+      .replace(/[O]/g, '0')
+      .replace(/[Q]/g, '0')
+      .replace(/[Z]/g, '2')
+      .replace(/[S]/g, '5')
+      .replace(/[B]/g, '8');
 
     const candidates = new Set([
-      baseText,
-      baseText.replace(/[O]/g, '0'),
-      baseText.replace(/[Q]/g, '0'),
-      baseText.replace(/[S]/g, '5'),
-      baseText.replace(/[B]/g, '8'),
-      baseText.replace(/[Z]/g, '2'),
-      baseText.replace(/[O]/g, '0').replace(/[Q]/g, '0').replace(/[S]/g, '5').replace(/[B]/g, '8').replace(/[Z]/g, '2')
+      text,
+      text.replace(/[I]/g, '1'),
+      text.replace(/[L]/g, '1'),
+      text.replace(/[O]/g, '0').replace(/[Q]/g, '0').replace(/[Z]/g, '2').replace(/[S]/g, '5').replace(/[B]/g, '8')
     ]);
 
     for (const candidate of candidates) {
       const patterns = [
+        /([A-Z]{2})([0-9]{2})([A-Z]{1,3})([0-9]{4})/,
         /([A-Z]{2})([0-9]{1,2})([A-Z]{1,3})([0-9]{4})/,
-        /([A-Z]{2})([0-9]{2})([A-Z]{2,3})([0-9]{4})/
+        /([A-Z]{2})([0-9]{2})([A-Z]{2})([0-9]{4})/
       ];
 
       for (const pattern of patterns) {
         const match = candidate.match(pattern);
         if (match) {
-          return `${match[1]} ${match[2]} ${match[3]} ${match[4]}`;
+          const state = match[1];
+          const reg = match[2];
+          const series = match[3];
+          const num = match[4];
+
+          if (state.length === 2 && series.length >= 1) {
+            return `${state} ${reg} ${series} ${num}`;
+          }
         }
       }
     }
@@ -73,13 +87,11 @@ export default function PlateScanner({ onConfirm, onClose }) {
     const video = webcamRef.current.video;
     if (!video || video.readyState !== 4) return;
 
-    // യഥാർത്ഥ കാമറ ഫ്രെയിമിന്റെ കൃത്യമായ സെന്റർ ഏരിയ ക്രോപ്പ് ചെയ്യുന്നു
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     const vw = video.videoWidth;
     const vh = video.videoHeight;
 
-    // ബോക്സിനുള്ളിലെ നമ്പർ മാത്രം കൃത്യമായി ഫോക്കസ് ചെയ്യാൻ
     const cropW = vw * 0.65;
     const cropH = vh * 0.22;
     const cropX = (vw - cropW) / 2;
@@ -89,12 +101,10 @@ export default function PlateScanner({ onConfirm, onClose }) {
     canvas.height = cropH;
     ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
-    // ഇമേജ് കൂടുതൽ ഷാർപ്പ് ആക്കാനുള്ള ഗ്രേസ്കെയിൽ പ്രോസസ്സിംഗ്
     const imgData = ctx.getImageData(0, 0, cropW, cropH);
     const d = imgData.data;
     for (let i = 0; i < d.length; i += 4) {
       const v = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114);
-      // ബ്ലാക്ക് & വൈറ്റ് ത്രെഷോൾഡ്
       const c = v > 115 ? 255 : 0;
       d[i] = d[i + 1] = d[i + 2] = c;
     }
@@ -102,8 +112,6 @@ export default function PlateScanner({ onConfirm, onClose }) {
 
     try {
       const { data: { text } } = await workerRef.current.recognize(canvas);
-      console.log('Detected Raw Text:', text);
-
       const fixedPlate = normalizeIndianPlate(text);
 
       if (fixedPlate) {
@@ -116,6 +124,18 @@ export default function PlateScanner({ onConfirm, onClose }) {
       setStatus('Scan error. Try again.');
     }
   };
+
+  useEffect(() => {
+    if (!workerReady || detectedPlate) return;
+
+    const autoScanTimer = setInterval(() => {
+      if (webcamRef.current?.video?.readyState === 4) {
+        handleScanNow();
+      }
+    }, 2000);
+
+    return () => clearInterval(autoScanTimer);
+  }, [workerReady, detectedPlate]);
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: '#000', color: '#fff', display: 'flex', flexDirection: 'column', zIndex: 999 }}>
@@ -153,7 +173,6 @@ export default function PlateScanner({ onConfirm, onClose }) {
 
       {detectedPlate ? (
         <div style={{ padding: '24px', background: '#18181b', borderRadius: '24px 24px 0 0', textAlign: 'center' }}>
-          {/* എഡിറ്റ് ചെയ്യാവുന്ന ഇൻപുട്ട് ബോക്സ് (ഒരു അക്ഷരം തെറ്റിയാലും പെട്ടെന്ന് തിരുത്താം) */}
           <input
             type="text"
             value={detectedPlate}
@@ -176,7 +195,7 @@ export default function PlateScanner({ onConfirm, onClose }) {
           <p style={{ margin: '0 0 16px 0', fontSize: '14px', color: '#d4d4d8' }}>Is this right?</p>
           <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
             <button
-              onClick={() => { setDetectedPlate(null); setStatus('Scan again'); }}
+              onClick={() => { setDetectedPlate(null); setStatus('Scanning again...'); }}
               style={{ padding: '12px 28px', background: '#ef4444', color: '#fff', border: 'none', borderRadius: '12px', fontWeight: 'bold', cursor: 'pointer' }}
             >
               ✕ Try Again

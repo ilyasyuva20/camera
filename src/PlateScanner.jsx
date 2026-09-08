@@ -147,8 +147,8 @@ export default function PlateScanner({ onConfirm, onClose }) {
     ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
     const detectedStyle = classifyPlateColor(canvas);
-    const styleOptions = ['standard', 'white', 'yellow', 'green', 'black'];
-    const reordered = styleOptions.filter((item) => item === style || item === detectedStyle || item === 'standard');
+    const effectiveStyle = style === 'standard' ? detectedStyle : style;
+    const invertForDarkBackground = ['green', 'black', 'yellow'].includes(effectiveStyle);
 
     const imgData = ctx.getImageData(0, 0, cropW, cropH);
     const d = imgData.data;
@@ -156,16 +156,12 @@ export default function PlateScanner({ onConfirm, onClose }) {
       const v = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114);
       let c = v > threshold ? 255 : 0;
 
-      if ((style === 'black' || detectedStyle === 'black') && v < 80) {
-        c = 255;
+      if (invertForDarkBackground) {
+        c = v > threshold ? 0 : 255;
       }
 
-      if ((style === 'yellow' || detectedStyle === 'yellow') && v > 180) {
-        c = 255;
-      }
-
-      if ((style === 'green' || detectedStyle === 'green') && v > 150) {
-        c = 255;
+      if (effectiveStyle === 'white') {
+        c = v > threshold ? 255 : 0;
       }
 
       d[i] = d[i + 1] = d[i + 2] = c;
@@ -179,7 +175,7 @@ export default function PlateScanner({ onConfirm, onClose }) {
 
     return {
       text: result.data.text,
-      style: reordered.length ? reordered[0] : 'standard'
+      style: effectiveStyle
     };
   };
 

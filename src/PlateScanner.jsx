@@ -15,6 +15,8 @@ export default function PlateScanner({ onConfirm, onClose }) {
         const worker = await createWorker('eng');
         await worker.setParameters({
           tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+          tessedit_pageseg_mode: '7',
+          classify_bln_numeric_mode: '1'
         });
         workerRef.current = worker;
         setWorkerReady(true);
@@ -32,37 +34,35 @@ export default function PlateScanner({ onConfirm, onClose }) {
   const normalizeIndianPlate = (raw) => {
     if (!raw) return '';
 
-    let text = String(raw).toUpperCase().replace(/[^A-Z0-9]/g, '');
-    if (!text) return '';
+    const base = String(raw)
+      .toUpperCase()
+      .replace(/IND/gi, '')
+      .replace(/[^A-Z0-9]/g, '');
 
-    text = text.replace(/IND/gi, '');
+    if (!base) return '';
 
-    const replacements = [
-      ['O', '0'],
-      ['Q', '0'],
-      ['I', '1'],
-      ['L', '1'],
-      ['Z', '2'],
-      ['S', '5'],
-      ['B', '8'],
-      ['G', '6'],
-      ['A', '4']
-    ];
-
-    const candidates = new Set([text]);
-    for (const [from, to] of replacements) {
-      for (const candidate of Array.from(candidates)) {
-        candidates.add(candidate.replace(new RegExp(from, 'g'), to));
-      }
-    }
-
-    const patterns = [
-      /([A-Z]{2})([0-9]{2})([A-Z]{1,3})([0-9]{4})/,
-      /([A-Z]{2})([0-9]{1,2})([A-Z]{1,3})([0-9]{4})/,
-      /([A-Z]{2})([0-9]{2})([A-Z]{2})([0-9]{4})/
-    ];
+    const candidates = new Set([
+      base,
+      base.replace(/LO|L0/g, 'KL'),
+      base.replace(/KO|K0/g, 'KL'),
+      base.replace(/O/g, '0'),
+      base.replace(/Q/g, '0'),
+      base.replace(/I/g, '1'),
+      base.replace(/L/g, '1'),
+      base.replace(/Z/g, '2'),
+      base.replace(/S/g, '5'),
+      base.replace(/B/g, '8'),
+      base.replace(/G/g, '6'),
+      base.replace(/A/g, '4'),
+      base.replace(/O/g, '0').replace(/Q/g, '0').replace(/I/g, '1').replace(/L/g, '1')
+    ]);
 
     const valid = [];
+    const patterns = [
+      /^([A-Z]{2})([0-9]{2})([A-Z]{1,3})([0-9]{4})$/,
+      /^([A-Z]{2})([0-9]{1,2})([A-Z]{1,3})([0-9]{4})$/,
+      /^([A-Z]{2})([0-9]{2})([A-Z]{2})([0-9]{4})$/
+    ];
 
     for (const candidate of candidates) {
       for (const pattern of patterns) {
@@ -82,17 +82,25 @@ export default function PlateScanner({ onConfirm, onClose }) {
 
     if (!valid.length) return '';
 
-    const preferred = valid.find(item => /[A-Z]{2}[0-9]{2}[A-Z]{1,3}[0-9]{4}/.test(item.replace(/\s+/g, '')));
-    return preferred || valid[0];
+    return valid.sort((a, b) => b.length - a.length)[0];
   };
 
-  const handleScanNow = async () => {
-    if (!workerReady || !webcamRef.current) return;
-    setStatus('Reading plate...');
+  const scorePlate = (plate) => {
+    if (!plate) return 0;
 
-    const video = webcamRef.current.video;
-    if (!video || video.readyState !== 4) return;
+    const clean = plate.replace(/\s+/g, '');
+    let score = 0;
 
+    if (/^[A-Z]{2}[0-9]{2}[A-Z]{1,3}[0-9]{4}$/.test(clean)) score += 30;
+    if (/^[A-Z]{2}[0-9]{1,2}[A-Z]{1,3}[0-9]{4}$/.test(clean)) score += 20;
+    if (clean.length >= 10 && clean.length <= 13) score += 10;
+    if (/[A-Z]{2}/.test(clean.slice(0, 2))) score += 5;
+    if (/[0-9]{4}$/.test(clean)) score += 5;
+
+    return score;
+  };
+
+  const getPlateFromFrame = async (video, threshold) => {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     const vw = video.videoWidth;
@@ -111,17 +119,37 @@ export default function PlateScanner({ onConfirm, onClose }) {
     const d = imgData.data;
     for (let i = 0; i < d.length; i += 4) {
       const v = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114);
-      const c = v > 115 ? 255 : 0;
+      const c = v > threshold ? 255 : 0;
       d[i] = d[i + 1] = d[i + 2] = c;
     }
     ctx.putImageData(imgData, 0, 0);
 
-    try {
-      const { data: { text } } = await workerRef.current.recognize(canvas);
-      const fixedPlate = normalizeIndianPlate(text);
+    const result = await workerRef.current.recognize(canvas);
+    return result.data.text;
+  };
 
-      if (fixedPlate) {
-        setDetectedPlate(fixedPlate);
+  const handleScanNow = async () => {
+    if (!workerReady || !webcamRef.current) return;
+    setStatus('Reading plate...');
+
+    const video = webcamRef.current.video;
+    if (!video || video.readyState !== 4) return;
+
+    try {
+      const attempts = [];
+      for (const threshold of [90, 120, 150]) {
+        const text = await getPlateFromFrame(video, threshold);
+        attempts.push(text);
+      }
+
+      const ranked = attempts
+        .map((item) => ({ value: normalizeIndianPlate(item), score: scorePlate(normalizeIndianPlate(item)) }))
+        .filter((item) => item.value && item.score > 0)
+        .sort((a, b) => b.score - a.score);
+
+      if (ranked.length > 0) {
+        const best = ranked[0].value;
+        setDetectedPlate(best);
         setStatus('Success!');
       } else {
         setStatus('Could not read a valid plate. Keep the plate straight and centered.');

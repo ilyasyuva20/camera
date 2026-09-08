@@ -100,32 +100,87 @@ export default function PlateScanner({ onConfirm, onClose }) {
     return score;
   };
 
-  const getPlateFromFrame = async (video, threshold) => {
+  const classifyPlateColor = (canvas) => {
+    const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+    let r = 0, g = 0, b = 0, brightness = 0, pixels = 0;
+
+    for (let i = 0; i < data.length; i += 4) {
+      r += data[i];
+      g += data[i + 1];
+      b += data[i + 2];
+      brightness += (data[i] + data[i + 1] + data[i + 2]) / 3;
+      pixels += 1;
+    }
+
+    const avgR = r / pixels;
+    const avgG = g / pixels;
+    const avgB = b / pixels;
+    const avgBrightness = brightness / pixels;
+
+    if (avgBrightness < 70) return 'black';
+    if (avgR > 180 && avgG > 150 && avgB < 170) return 'yellow';
+    if (avgG > avgR && avgG > avgB) return 'green';
+    if (avgBrightness > 180) return 'white';
+    return 'standard';
+  };
+
+  const getPlateFromFrame = async (video, threshold, fullFrame = false, style = 'standard') => {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     const vw = video.videoWidth;
     const vh = video.videoHeight;
 
-    const cropW = vw * 0.65;
-    const cropH = vh * 0.22;
-    const cropX = (vw - cropW) / 2;
-    const cropY = (vh - cropH) / 2;
+    let cropW = vw * 0.65;
+    let cropH = vh * 0.22;
+    let cropX = (vw - cropW) / 2;
+    let cropY = (vh - cropH) / 2;
+
+    if (fullFrame) {
+      cropW = vw;
+      cropH = vh;
+      cropX = 0;
+      cropY = 0;
+    }
 
     canvas.width = cropW;
     canvas.height = cropH;
     ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
+    const detectedStyle = classifyPlateColor(canvas);
+    const styleOptions = ['standard', 'white', 'yellow', 'green', 'black'];
+    const reordered = styleOptions.filter((item) => item === style || item === detectedStyle || item === 'standard');
+
     const imgData = ctx.getImageData(0, 0, cropW, cropH);
     const d = imgData.data;
     for (let i = 0; i < d.length; i += 4) {
       const v = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114);
-      const c = v > threshold ? 255 : 0;
+      let c = v > threshold ? 255 : 0;
+
+      if ((style === 'black' || detectedStyle === 'black') && v < 80) {
+        c = 255;
+      }
+
+      if ((style === 'yellow' || detectedStyle === 'yellow') && v > 180) {
+        c = 255;
+      }
+
+      if ((style === 'green' || detectedStyle === 'green') && v > 150) {
+        c = 255;
+      }
+
       d[i] = d[i + 1] = d[i + 2] = c;
     }
     ctx.putImageData(imgData, 0, 0);
 
-    const result = await workerRef.current.recognize(canvas);
-    return result.data.text;
+    const result = await workerRef.current.recognize(canvas, {
+      rotate: false,
+      logger: () => {}
+    });
+
+    return {
+      text: result.data.text,
+      style: reordered.length ? reordered[0] : 'standard'
+    };
   };
 
   const handleScanNow = async () => {
@@ -137,13 +192,25 @@ export default function PlateScanner({ onConfirm, onClose }) {
 
     try {
       const attempts = [];
+      const styles = ['white', 'yellow', 'green', 'black', 'standard'];
+
+      for (const style of styles) {
+        for (const threshold of [80, 110, 140, 170]) {
+          const frameData = await getPlateFromFrame(video, threshold, false, style);
+          attempts.push(frameData);
+        }
+      }
+
       for (const threshold of [90, 120, 150]) {
-        const text = await getPlateFromFrame(video, threshold);
-        attempts.push(text);
+        const frameData = await getPlateFromFrame(video, threshold, true, 'standard');
+        attempts.push(frameData);
       }
 
       const ranked = attempts
-        .map((item) => ({ value: normalizeIndianPlate(item), score: scorePlate(normalizeIndianPlate(item)) }))
+        .map((item) => {
+          const normalized = normalizeIndianPlate(item.text);
+          return { value: normalized, score: scorePlate(normalized) + (item.style === 'standard' ? 0 : 5) };
+        })
         .filter((item) => item.value && item.score > 0)
         .sort((a, b) => b.score - a.score);
 

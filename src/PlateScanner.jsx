@@ -33,36 +33,33 @@ export default function PlateScanner({ onConfirm, onClose }) {
   const normalizeIndianPlate = (raw) => {
     if (!raw) return '';
 
-    let text = String(raw)
+    const baseText = String(raw)
       .toUpperCase()
       .replace(/[^A-Z0-9]/g, '');
 
-    if (!text) return '';
+    if (!baseText) return '';
 
-    // Common OCR mistakes on tiny plate shots.
-    text = text
-      .replace(/[O]/g, '0')
-      .replace(/[I]/g, '1')
-      .replace(/[L]/g, '1')
-      .replace(/[S]/g, '5')
-      .replace(/[B]/g, '8')
-      .replace(/[Z]/g, '2')
-      .replace(/[Q]/g, '0');
+    const candidates = new Set([
+      baseText,
+      baseText.replace(/[O]/g, '0'),
+      baseText.replace(/[Q]/g, '0'),
+      baseText.replace(/[S]/g, '5'),
+      baseText.replace(/[B]/g, '8'),
+      baseText.replace(/[Z]/g, '2'),
+      baseText.replace(/[O]/g, '0').replace(/[Q]/g, '0').replace(/[S]/g, '5').replace(/[B]/g, '8').replace(/[Z]/g, '2')
+    ]);
 
-    // Fix common false starts like KL/IL/LS.
-    if (text.startsWith('IL') || text.startsWith('LS')) {
-      text = 'KL' + text.slice(2);
-    }
+    for (const candidate of candidates) {
+      const patterns = [
+        /([A-Z]{2})([0-9]{1,2})([A-Z]{1,3})([0-9]{4})/,
+        /([A-Z]{2})([0-9]{2})([A-Z]{2,3})([0-9]{4})/
+      ];
 
-    const patterns = [
-      /([A-Z]{2})([0-9]{1,2})([A-Z]{1,3})([0-9]{4})/,
-      /([A-Z]{2})([0-9]{2})([A-Z]{2,3})([0-9]{4})/
-    ];
-
-    for (const pattern of patterns) {
-      const match = text.match(pattern);
-      if (match) {
-        return `${match[1]} ${match[2]} ${match[3]} ${match[4]}`;
+      for (const pattern of patterns) {
+        const match = candidate.match(pattern);
+        if (match) {
+          return `${match[1]} ${match[2]} ${match[3]} ${match[4]}`;
+        }
       }
     }
 
